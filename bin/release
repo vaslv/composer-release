@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! command -v composer >/dev/null 2>&1; then
+    echo "error: composer is required" >&2
+    exit 1
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "error: working tree is dirty — commit or stash first" >&2
+    exit 1
+fi
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$branch" == "HEAD" ]]; then
+    echo "error: detached HEAD — check out a branch first" >&2
+    exit 1
+fi
+if [[ "$branch" != "main" && "$branch" != "master" ]]; then
+    read -rp "Current branch is '$branch' (not main). Continue? [y/N] " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || exit 1
+fi
+
+has_origin=0
+if git remote get-url origin >/dev/null 2>&1; then
+    has_origin=1
+    git fetch --tags --quiet origin \
+        || echo "warning: could not fetch tags from origin — using local tags only" >&2
+fi
+
+# semver.org: numeric components must not have leading zeros
+semver_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+
+# Strip the optional v before comparing: git's version sort ranks every
+# v-prefixed tag above every bare one, so mixed-style repos would pick a
+# wrong (lower) "latest" version.
+current="$(git tag --list | grep -E "^v?${semver_re}\$" | sed 's/^v//' \
+    | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1 || true)"
+
+if [[ -z "$current" ]]; then
+    current="0.0.0"
+    prefix=""
+    echo "No existing version tags found. Starting from 0.0.0." >&2
+else
+    # both styles may tag the same version; prefer the v-prefixed one
+    if git rev-parse -q --verify "refs/tags/v$current" >/dev/null; then
+        prefix="v"
+    else
+        prefix=""
+    fi
+    echo "Current version: ${prefix}${current}" >&2
+fi
+
+IFS='.' read -r major minor patch <<<"$current"
+
+next_patch="$major.$minor.$((patch + 1))"
+next_minor="$major.$((minor + 1)).0"
+next_major="$((major + 1)).0.0"
+
+cat >&2 <<EOF
+
+Select next version:
+  1) patch  → ${prefix}${next_patch}
+  2) minor  → ${prefix}${next_minor}
+  3) major  → ${prefix}${next_major}
+  4) custom
+  q) quit
+
+EOF
+
+read -rp "Choice [1-4/q]: " choice
+
+case "$choice" in
+    1) new="$next_patch" ;;
+    2) new="$next_minor" ;;
+    3) new="$next_major" ;;
+    4)
+        read -rp "Enter version (without prefix, e.g. 1.2.3): " new
+        [[ "$new" =~ ^${semver_re}$ ]] || { echo "Invalid semver" >&2; exit 1; }
+        ;;
+    q|Q) exit 0 ;;
+    *) echo "Invalid choice" >&2; exit 1 ;;
+esac
+
+tag="${prefix}${new}"
+
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+    echo "error: tag $tag already exists" >&2
+    exit 1
+fi
+
+echo >&2
+echo "About to release: $tag" >&2
+read -rp "Proceed? [y/N] " ans
+[[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted" >&2; exit 0; }
+
+# Manage composer.json's version field only when the project already commits
+# one: Packagist discourages the field for tag-versioned libraries, so absent
+# field means a tag-only release. (Top-level field assumed — good enough for
+# a grep; nested "version" keys in exotic configs are not our audience.)
+if grep -Eq '"version"[[:space:]]*:' composer.json; then
+    rollback() {
+        echo "error: release failed — restoring composer.json" >&2
+        git reset -q HEAD -- composer.json 2>/dev/null || true
+        git checkout -q -- composer.json
+    }
+    trap rollback ERR
+
+    composer config version "$new" --no-interaction
+    git add composer.json
+    if git diff --cached --quiet; then
+        # composer.json already carried this version (e.g. a previous run
+        # failed after the commit) — nothing to commit, tag still missing
+        echo "note: composer.json already at $new — skipping commit" >&2
+    else
+        git commit -m "chore(release): $tag"
+    fi
+
+    trap - ERR
+else
+    echo "note: composer.json has no version field — creating tag only" >&2
+fi
+
+git tag -a "$tag" -m "$tag"
+
+echo >&2
+echo "Created commit and tag $tag locally." >&2
+
+if [[ "$has_origin" -eq 1 ]]; then
+    read -rp "Push to origin now? [y/N] " ans || ans="n"
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+        git push --atomic origin "$branch" "$tag"
+        echo "Pushed." >&2
+    else
+        echo "Not pushed. Run: git push --atomic origin $branch $tag" >&2
+    fi
+else
+    echo "No 'origin' remote configured — tag created locally, nothing to push." >&2
+fi
