@@ -1,9 +1,13 @@
 # vaslv/composer-release
 
 Interactive release helper for Composer projects. It looks at your existing git
-tags, offers the next patch / minor / major version, writes it to
-`composer.json`, then commits, tags and (optionally) pushes — so you never have
-to check what the last version was before cutting a release.
+tags, offers the next patch / minor / major version, then tags and (optionally)
+pushes — so you never have to check what the last version was before cutting a
+release.
+
+The git tag is the only source of truth. A release writes no files and creates
+no release commit: nothing in the working tree records the version, so nothing
+can drift from the tag or conflict on a merge.
 
 ```
 Current version: v1.4.2
@@ -18,8 +22,9 @@ Select next version:
 
 ## Requirements
 
-- bash, git and composer available in `PATH`
-- Composer 2.x
+- bash and git available in `PATH`
+- Composer 2.x (to install the plugin; the release script itself never shells
+  out to composer)
 
 ## Installation
 
@@ -57,14 +62,97 @@ composer exec release
    semver tag — `1.2.3` and `v1.2.3` styles are both supported, mixed styles
    compare correctly, and the existing prefix is preserved.
 3. Lets you pick patch / minor / major / custom for the next version.
-4. If `composer.json` already commits a `version` field, updates it and commits
-   as `chore(release): <tag>` (restoring the file if the commit fails). Without
-   the field — the Packagist-recommended setup — the release is tag-only.
-5. Creates an annotated tag.
-6. Asks whether to push the branch and the tag to `origin` in one atomic push.
+4. Creates an annotated tag. That is the whole release: no file is written and
+   no commit is made.
+5. Asks whether to push the branch and the tag to `origin` in one atomic push.
+   The branch goes along even though nothing was committed — the tagged commit
+   may simply not be on `origin` yet, and an atomic push never leaves a tag
+   pointing at a commit nobody can fetch.
 
 Every destructive step asks for confirmation first; nothing is pushed without
 an explicit yes.
+
+If `composer.json` still commits a `version` field, the command prints a
+warning. It does not touch the field — see below.
+
+## Migrating from 0.1.x
+
+0.1.x updated a `version` field in `composer.json` and made a
+`chore(release): <tag>` commit whenever the project committed one. 0.2.0 drops
+that entirely: the release is always tag-only.
+
+If your project commits the field:
+
+```bash
+composer config --unset version
+composer update --lock          # refresh the lock file's content hash
+```
+
+Removing the field changes `composer.json`, which changes the hash recorded in
+`composer.lock`; without the second command `composer validate` reports the
+lock file as out of date.
+
+Nothing else is required — a project that never committed the field already
+behaved this way.
+
+## Getting the version into a deployed application
+
+A library needs no follow-up: Packagist derives the version from the tag. An
+application does, because the deployed artifact has no tags. Pass the tag in at
+build time and bake it into the image — that is the whole recipe.
+
+`Dockerfile`, as the **last** layers so a version bump invalidates nothing
+above them:
+
+```dockerfile
+ARG APP_VERSION=dev
+ARG VCS_REF=
+ARG BUILD_DATE=
+
+ENV APP_VERSION=${APP_VERSION}
+
+LABEL org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
+```
+
+CI (GitLab shown; GitHub Actions is the same with `github.ref_name` /
+`github.sha`) — note the single variable feeding both the image tag and the
+build argument, so the two can never disagree:
+
+```yaml
+- export APP_VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+- export IMAGE="$REGISTRY/$PROJECT:$APP_VERSION"
+- >-
+  docker build
+  --build-arg APP_VERSION="$APP_VERSION"
+  --build-arg VCS_REF="$CI_COMMIT_SHA"
+  --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  -t "$IMAGE" .
+```
+
+In a Laravel application, read it in `config/app.php` — `env()` must be called
+inside the config file, because `php artisan config:cache` does not load `.env`
+at all and a runtime `env()` would return `null` silently, only in production:
+
+```php
+'version' => env('APP_VERSION') ?: null,
+```
+
+Two traps worth stating outright:
+
+- **Do not put `APP_VERSION` in `.env`.** Laravel's dotenv is immutable and
+  leaves an already-set process variable alone, so the value baked into the
+  image always wins and the `.env` entry is ignored without a word.
+- **Keep the version a property of the artifact, not of the run.** Passing it
+  as a runtime environment variable instead of a build argument means the same
+  image reports different versions depending on how it was started.
+
+What a running container actually is:
+
+```bash
+docker inspect <container> --format '{{index .Config.Labels "org.opencontainers.image.version"}}'
+```
 
 ## Development
 

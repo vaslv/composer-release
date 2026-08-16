@@ -3,11 +3,6 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-if ! command -v composer >/dev/null 2>&1; then
-    echo "error: composer is required" >&2
-    exit 1
-fi
-
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "error: working tree is dirty — commit or stash first" >&2
     exit 1
@@ -96,41 +91,32 @@ echo "About to release: $tag" >&2
 read -rp "Proceed? [y/N] " ans
 [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted" >&2; exit 0; }
 
-# Manage composer.json's version field only when the project already commits
-# one: Packagist discourages the field for tag-versioned libraries, so absent
-# field means a tag-only release. (Top-level field assumed — good enough for
-# a grep; nested "version" keys in exotic configs are not our audience.)
-if grep -Eq '"version"[[:space:]]*:' composer.json; then
-    rollback() {
-        echo "error: release failed — restoring composer.json" >&2
-        git reset -q HEAD -- composer.json 2>/dev/null || true
-        git checkout -q -- composer.json
-    }
-    trap rollback ERR
-
-    composer config version "$new" --no-interaction
-    git add composer.json
-    if git diff --cached --quiet; then
-        # composer.json already carried this version (e.g. a previous run
-        # failed after the commit) — nothing to commit, tag still missing
-        echo "note: composer.json already at $new — skipping commit" >&2
-    else
-        git commit -m "chore(release): $tag"
-    fi
-
-    trap - ERR
-else
-    echo "note: composer.json has no version field — creating tag only" >&2
+# The tag is the only source of truth, so a release writes nothing: no version
+# field to bump, no release commit, no rollback path to get wrong. A project
+# that still commits a `version` field in composer.json is warned, because the
+# field is no longer touched here and will drift from the tag it claims to
+# mirror. (Top-level field assumed — good enough for a grep; nested "version"
+# keys in exotic configs are not our audience.)
+if [[ -f composer.json ]] && grep -Eq '"version"[[:space:]]*:' composer.json; then
+    cat >&2 <<'EOF'
+warning: composer.json still commits a "version" field. This command no longer
+         updates it, so it will drift from the tag. Remove the field and run
+         `composer update --lock` to refresh the lock file's content hash.
+EOF
 fi
 
 git tag -a "$tag" -m "$tag"
 
 echo >&2
-echo "Created commit and tag $tag locally." >&2
+echo "Created tag $tag locally. Nothing in the working tree changed." >&2
 
 if [[ "$has_origin" -eq 1 ]]; then
     read -rp "Push to origin now? [y/N] " ans || ans="n"
     if [[ "$ans" =~ ^[Yy]$ ]]; then
+        # The branch still goes with the tag even though the release creates no
+        # commit: the tagged commit may simply not be on origin yet, and an
+        # atomic push either lands both or neither, never a tag pointing at a
+        # commit nobody else can fetch.
         git push --atomic origin "$branch" "$tag"
         echo "Pushed." >&2
     else

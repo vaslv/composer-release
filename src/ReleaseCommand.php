@@ -14,7 +14,7 @@ class ReleaseCommand extends BaseCommand
     {
         $this
             ->setName('release')
-            ->setDescription('Interactively pick the next semver version, then commit, tag and push it');
+            ->setDescription('Interactively pick the next semver version, then tag and push it');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int

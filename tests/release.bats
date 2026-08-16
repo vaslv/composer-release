@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # Run: bats tests/release.bats  (https://bats-core.readthedocs.io)
 #
-# Each test runs bin/release inside a throwaway git repo with a composer shim
-# on PATH, so the suite needs git + bash only.
+# Each test runs bin/release inside a throwaway git repo, so the suite needs
+# git + bash only. The script never shells out to composer, so there is nothing
+# to stub.
 
 setup() {
     TMP_REPO="$(mktemp -d)"
@@ -14,25 +15,11 @@ setup() {
     git add -A
     git commit -qm init
 
-    # composer shim: "composer config version X" rewrites composer.json,
-    # everything else is a no-op — keeps the suite hermetic. Lives OUTSIDE
-    # the repo so the dirty-tree guard doesn't see it as an untracked file.
-    SHIM_DIR="$(mktemp -d)"
-    cat > "$SHIM_DIR/composer" <<'SHIM'
-#!/bin/sh
-if [ "$1" = "config" ] && [ "$2" = "version" ]; then
-    printf '{"name":"acme/app","version":"%s"}\n' "$3" > composer.json
-fi
-exit 0
-SHIM
-    chmod +x "$SHIM_DIR/composer"
-    export PATH="$SHIM_DIR:$PATH"
-
     RELEASE="$BATS_TEST_DIRNAME/../bin/release"
 }
 
 teardown() {
-    rm -rf "$TMP_REPO" "$SHIM_DIR"
+    rm -rf "$TMP_REPO"
 }
 
 @test "picks highest version across v-prefixed and bare tags" {
@@ -78,48 +65,40 @@ commit_version_field() {
     git commit -qm 'track version field'
 }
 
-@test "no version field: tag-only release, composer.json untouched" {
+@test "release is tag-only: no commit, working tree untouched" {
     git tag v0.1.0
     head_before="$(git rev-parse HEAD)"
+    count_before="$(git rev-list --count HEAD)"
     run bash -c "printf '1\ny\n' | '$RELEASE'"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"creating tag only"* ]]
+    [[ "$output" == *"Nothing in the working tree changed"* ]]
     git rev-parse -q --verify refs/tags/v0.1.1
+    [ "$(git rev-parse HEAD)" = "$head_before" ]
+    [ "$(git rev-list --count HEAD)" = "$count_before" ]
+    [ -z "$(git status --porcelain)" ]
+}
+
+@test "a committed version field is warned about, never rewritten" {
+    commit_version_field 0.1.0
+    git tag v0.1.0
+    head_before="$(git rev-parse HEAD)"
+    before="$(cat composer.json)"
+    run bash -c "printf '1\ny\n' | '$RELEASE'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'still commits a "version" field'* ]]
+    git rev-parse -q --verify refs/tags/v0.1.1
+    [ "$(cat composer.json)" = "$before" ]
     [ "$(git rev-parse HEAD)" = "$head_before" ]
     [ -z "$(git status --porcelain)" ]
 }
 
-@test "committed version field is bumped and committed" {
-    commit_version_field 0.1.0
+@test "a repo without composer.json releases without a stray grep error" {
+    git rm -q composer.json
+    git commit -qm 'drop composer.json'
     git tag v0.1.0
     run bash -c "printf '1\ny\n' | '$RELEASE'"
     [ "$status" -eq 0 ]
-    git rev-parse -q --verify refs/tags/v0.1.1
-    grep -q '"version":"0.1.1"' composer.json
-    [ "$(git log -1 --format=%s)" = "chore(release): v0.1.1" ]
-    [ -z "$(git status --porcelain)" ]
-}
-
-@test "failed commit leaves working tree clean and creates no tag" {
-    commit_version_field 0.1.0
-    git tag v0.1.0
-    printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit
-    chmod +x .git/hooks/pre-commit
-    run bash -c "printf '1\ny\n' | '$RELEASE'"
-    [ "$status" -ne 0 ]
-    [ -z "$(git status --porcelain)" ]
-    ! git rev-parse -q --verify refs/tags/v0.1.1
-}
-
-@test "rerun after failed tag step skips the commit and still tags" {
-    commit_version_field 0.1.0
-    git tag v0.1.0
-    run bash -c "printf '1\ny\n' | '$RELEASE'"
-    [ "$status" -eq 0 ]
-    git tag -d v0.1.1 >/dev/null
-    run bash -c "printf '1\ny\n' | '$RELEASE'"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"skipping commit"* ]]
+    [[ "$output" != *"No such file"* ]]
     git rev-parse -q --verify refs/tags/v0.1.1
 }
 

@@ -1,6 +1,6 @@
 {
     "name": "vaslv/composer-release",
-    "description": "Interactive release helper: picks the next semver version from existing git tags, tags and pushes; bumps composer.json's version field only when the project already commits one. Available as `composer release`.",
+    "description": "Interactive release helper: picks the next semver version from existing git tags, then creates an annotated tag and optionally pushes it. Tag-only — no release commit, nothing in the working tree changes. Available as `composer release`.",
     "type": "composer-plugin",
     "license": "MIT",
     "keywords": ["release", "semver", "git", "tag", "version", "composer-plugin"],
