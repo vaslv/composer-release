@@ -37,7 +37,8 @@
     },
     "scripts": {
         "analyse": "phpstan analyse --no-progress",
-        "test": "phpunit --bootstrap vendor/autoload.php tests"
+        "test": "phpunit --bootstrap vendor/autoload.php tests",
+        "test-shell": "bats tests/release.bats"
     },
     "config": {
         "sort-packages": true

@@ -105,7 +105,23 @@ warning: composer.json still commits a "version" field. This command no longer
 EOF
 fi
 
-git tag -a "$tag" -m "$tag"
+# The message defaults to the tag itself; a project that wants its own wording
+# sets a template once and forgets about it:
+#
+#     git config release.tagMessage 'Release {tag}'
+#
+# {tag} is replaced with the tag being created (prefix included); a template
+# without the placeholder is used verbatim. The substitution is plain parameter
+# expansion — never eval — so `$(...)`, backticks and the like survive into the
+# message as literal text instead of running.
+template="$(git config --get release.tagMessage || true)"
+if [[ -n "$template" ]]; then
+    message="${template//\{tag\}/$tag}"
+else
+    message="$tag"
+fi
+
+git tag -a "$tag" -m "$message"
 
 echo >&2
 echo "Created tag $tag locally. Nothing in the working tree changed." >&2

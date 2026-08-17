@@ -102,6 +102,43 @@ commit_version_field() {
     git rev-parse -q --verify refs/tags/v0.1.1
 }
 
+tag_message() {
+    git tag -l --format='%(contents)' "$1"
+}
+
+@test "tag message defaults to the tag itself" {
+    git tag v0.1.0
+    run bash -c "printf '1\ny\n' | '$RELEASE'"
+    [ "$status" -eq 0 ]
+    [ "$(tag_message v0.1.1)" = "v0.1.1" ]
+}
+
+@test "a configured template is applied, {tag} replaced by the new tag" {
+    git tag v0.1.0
+    git config release.tagMessage 'Release {tag} 🎉'
+    run bash -c "printf '1\ny\n' | '$RELEASE'"
+    [ "$status" -eq 0 ]
+    [ "$(tag_message v0.1.1)" = "Release v0.1.1 🎉" ]
+}
+
+@test "a template without the placeholder is used verbatim" {
+    git tag v0.1.0
+    git config release.tagMessage 'ship it'
+    run bash -c "printf '1\ny\n' | '$RELEASE'"
+    [ "$status" -eq 0 ]
+    [ "$(tag_message v0.1.1)" = "ship it" ]
+}
+
+@test "a template is never evaluated: substitutions stay literal" {
+    git tag v0.1.0
+    git config release.tagMessage 'Release {tag} $(touch pwned) `touch pwned2` $HOME'
+    run bash -c "printf '1\ny\n' | '$RELEASE'"
+    [ "$status" -eq 0 ]
+    [ "$(tag_message v0.1.1)" = 'Release v0.1.1 $(touch pwned) `touch pwned2` $HOME' ]
+    [ ! -e pwned ]
+    [ ! -e pwned2 ]
+}
+
 @test "custom entry of an existing version is rejected before any mutation" {
     git tag v0.1.0
     run bash -c "printf '4\n0.1.0\n' | '$RELEASE'"

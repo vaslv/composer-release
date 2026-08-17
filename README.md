@@ -62,7 +62,8 @@ composer exec release
    semver tag — `1.2.3` and `v1.2.3` styles are both supported, mixed styles
    compare correctly, and the existing prefix is preserved.
 3. Lets you pick patch / minor / major / custom for the next version.
-4. Creates an annotated tag. That is the whole release: no file is written and
+4. Creates an annotated tag, its message defaulting to the tag itself and
+   configurable (see below). That is the whole release: no file is written and
    no commit is made.
 5. Asks whether to push the branch and the tag to `origin` in one atomic push.
    The branch goes along even though nothing was committed — the tagged commit
@@ -74,6 +75,23 @@ an explicit yes.
 
 If `composer.json` still commits a `version` field, the command prints a
 warning. It does not touch the field — see below.
+
+## Configuring the tag message
+
+By default the annotated tag carries the tag as its message (`v1.2.3`). Set a
+template once per repository to use your own wording instead:
+
+```bash
+git config release.tagMessage 'Release {tag}'
+```
+
+- `{tag}` is replaced with the tag being created, prefix included.
+- A template without the placeholder is used verbatim — handy for a fixed
+  message like `ship it`.
+- The template is never evaluated: `$(...)`, backticks and `$VAR` end up in the
+  message as literal text.
+- Add `--global` to apply it to every repository, or drop the setting with
+  `git config --unset release.tagMessage`.
 
 ## Migrating from 0.1.x
 
@@ -160,8 +178,12 @@ docker inspect <container> --format '{{index .Config.Labels "org.opencontainers.
 composer install
 composer analyse         # PHPStan, level max
 composer test            # PHPUnit smoke tests for the plugin wiring
-bats tests/release.bats  # end-to-end tests for the release script
+composer test-shell      # bats end-to-end tests for the release script
 ```
+
+The two suites stay separate commands on purpose: `composer test` needs only
+PHP, while `test-shell` needs [bats](https://bats-core.readthedocs.io) and runs
+the actual script against throwaway git repositories.
 
 ## License
 
